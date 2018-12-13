@@ -1,4 +1,4 @@
-# tosh | Assignment 5
+# mysh | Assignment 5
 
 ## Authors
 Trey Oehmler 
@@ -12,6 +12,7 @@ CS315 Fall 2018
 
 [Writing Your Own Shell - Cornell Computer Science](https://www.cs.cornell.edu/courses/cs414/2004su/homework/shell/shell.html)
  
- [Implementation of a simple shell, xssh - Rose-Hulman](https://www.rose-hulman.edu/class/csse/csse332/201130/Slides/19-shellProject.pdf)
+[Implementation of a simple shell, xssh - Rose-Hulman](https://www.rose-hulman.edu/class/csse/csse332/201130/Slides/19-shellProject.pdf)
 
+[Pipes - CS Rutgers](https://www.cs.rutgers.edu/~pxk/416/notes/c-tutorials/pipe.html)
 

@@ -4,35 +4,63 @@
  * CS315 Assignment 5 Fall 2018
  */
 
-#include "mysh.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
-int
-main(int argc, char *argv[])
+#define INPUT_BYTES  4096
+#define ARG_SIZE     11
+#define MAX_PROGS    100
+
+void tosh_loop(void);
+char *get_input(void);
+char **parse_progs(char *input);
+int count_progs(char **progs);
+char **parse_args(char *prog);
+int parse_io(char **args, int flag);
+int is_builtin(char **args);
+int builtin_size(void);
+int tosh_cd(char **args);
+int tosh_pwd(char **args);
+int tosh_help(char **args);
+int tosh_exit(char **args);
+
+char *builtin_str[] = {
+	"help",
+	"cd",
+	"pwd",
+	"exit"
+};
+
+int (*builtin_func[]) (char **) = {
+     &tosh_help,
+     &tosh_cd,
+     &tosh_pwd,
+     &tosh_exit
+};
+
+int main(int argc, char *argv[])
 {
-	// Run loop to input commands
 	tosh_loop();
-
-	// TODO: shutdown / cleanup
-
 	return 0;
 }
-
 
 void tosh_loop(void) 
 {
 	/* executes loop to read & execute commands */
-
-	char *input;
-	char **args, **progs;
 	int status = 1;
-
-	prog_count = 0;
-
 	while (status) {
-		int out_fd, in_fd;
+
+		int out_fd, in_fd, prog_count, pid, p_status;
+		char *input;
+		char **args, **progs;
+		
+        // tosh: trey oehmler shell
 		printf("tosh> ");
 		input = get_input();
 		
@@ -43,109 +71,96 @@ void tosh_loop(void)
 			break;
 		}
 	
-		progs = parse_progs(input); // parse_progs() sets prog_count
+		progs = parse_progs(input); // init progs
+		if (!progs) { // malloc error within parse_progs()
+			continue; // goto next loop iteration
+		}
+		prog_count = count_progs(progs); 
 
+		// save in / out
+		int tmp_in = dup(0);
+		int tmp_out = dup(1);
 		
-
-		if (prog_count < 1) {
-			printf("parse_progs() error \n"); // malloc() err w/in parse_progs()
-		} else if (prog_count == 1) {
-
-			//check for both output and input redirection
-			args = parse_args(progs[0]);
-			out_fd = parse_output(args);
-			in_fd = parse_input(args);
-			status = execute_command(args, in_fd, out_fd);
-			free(args);
-
-		} else { // need to use pipes
+		// init args for first program 
+		args = parse_args(progs[0]);
 		
-			/* setting up pipes: 
-			 * pipe_fd[0] = read end of progs[1]
-			 * pipe_fd[1] = write_end of progs[0] ... etc */
-			int pipe_count = prog_count - 1;			
-			for (int i = 0; i < pipe_count; i ++) {
-				pipe(pipe_fd + (i * 2));
+		// check for input redirection
+		in_fd = parse_io(args, 0);
+		if (in_fd < 0) {
+			in_fd = dup(tmp_in);
+		}
+
+        // loop through programs & execute
+		for (int i = 0; i < prog_count; i ++) {
+			// redirect input
+			dup2(in_fd, 0);
+			close(in_fd);
+			// init args if needed
+			if (i > 0) { 
+				args = parse_args(progs[i]);
 			}
-
-			/* parse each program into args :
-			 * set in / out fd from pipe_fd[] or by parsing
-			 * execute each program (break on status <= 0) */
-			int current = 0;
-
-			while (status && (current < prog_count)) {
-				printf("program count: %d\n", prog_count);
-				args = parse_args(progs[current]);
-
-				print_args(args);
-				// assume non-contradictory redirection 
-				if (current == 0) {
-					// first prog
-					in_fd = parse_input(args);
-					out_fd = pipe_fd[1];
-				} else if (current == (prog_count - 1)) {
-					// last prog
-					in_fd = pipe_fd[(2 * current) - 2];
-					out_fd = parse_output(args);
-					printf("last\n");
-				} else {
-					// input & ouput redirection w/ pipes
-					in_fd = pipe_fd[(2 * current) - 2];
-					out_fd = pipe_fd[(2 * current) + 1];
+			// only checks output redir for last prog
+			if (i == (prog_count - 1)) {
+				out_fd = parse_io(args, 1);
+				if (out_fd < 0) {
+					out_fd = dup(tmp_out);
 				}
-				
-				status = execute_command(args, in_fd, out_fd);
-				current ++;
-				free(args);
+			} else {
+				// create a pipe
+				int fd_pipe[2];
+				pipe(fd_pipe);
+				out_fd = fd_pipe[1];
+				in_fd = fd_pipe[0];
 			}
-		} 
+			// redirect output
+			dup2(out_fd, 1);
+			close(out_fd);
+			// check if builtin, call func if so
+			int builtin_index = is_builtin(args);
+			if (builtin_index > -1) {
+				status = (*builtin_func[builtin_index])(args);
+			} else {
+				// launch new process
+				pid = fork();
+				if (pid < 0) {
+					perror("fork error");
+				} else if (pid == 0) {
+					if (execvp(args[0], args) < 0) {
+						perror("exec error");
+					}
+				}
+			}
+			free(args);
+		}
+
+		//restore in / out defaults
+		dup2(tmp_in, 0);
+		dup2(tmp_out, 1);
+		close(tmp_in);
+		close(tmp_out);
+
+		for (int i = 0; i < prog_count; i++) {
+			wait(&p_status);
+		}
+
 		free(input);
 		free(progs);
-		prog_count = 0;
-	}
-}
-
-void close_pipes() 
-{
-	/* closes all open pipes */
-	int pipe_count = prog_count - 1;
-	for (int i = 0; i < (2 * pipe_count); i ++) {
-		printf("close: %d\n", pipe_fd[i]);
-		close(pipe_fd[i]);
-	}
-}
-
-void print_progs(char **progs) 
-{
-	for (int i = 0; progs[i]; i++) {
-		printf("prog %d: %s", i, progs[i]);
-	}
-}
-
-void print_args(char **args) 
-{
-	for (int i = 0; args[i]; i++) {
-		printf("arg %d: %s\n", i, args[i]);
 	}
 }
 
 char *get_input(void)
 {	
-	/* read input from stdin using getline() */
-
+    /* allocates memory for input 
+     * reads input from stdin using getline()
+     * rets ptr to input or NULL on err */
 	size_t input_size = INPUT_BYTES;
 	char *line_buf = malloc(sizeof(char *) * input_size);
-
-	if (!line_buf) // check for allocation error
-	{
-		fprintf(stderr, "malloc error\n");
+	if (!line_buf) { // check for allocation error
 		return NULL;
 	}
 
 	ssize_t bytes_read = getline(&line_buf, &input_size, stdin);
-
-	if (bytes_read < 0)
-	{
+	if (bytes_read == -1) { // check for getline error
 		return NULL;
 	}
 	return line_buf;
@@ -153,12 +168,11 @@ char *get_input(void)
 
 char **parse_progs(char *input) 
 {
-	/* splits input into progs based on pipes */
-
-	char **progs = malloc(sizeof(char *) * MAX_PROG_SIZE);
-
-	if (!progs) {
-		fprintf(stderr, "malloc error\n");
+    /* allocates memory for program array
+     * tokenizes progs based on pipes using strtok()
+     * returns ptr to array or NULL on err */
+	char **progs = malloc(sizeof(char *) * MAX_PROGS);
+	if (!progs) { // allocation error
 		return NULL;
 	}
 
@@ -167,31 +181,36 @@ char **parse_progs(char *input)
 	while (token) {
 		progs[position] = token;
 		position ++;
-		prog_count ++;
 		token = strtok(NULL, "|");
 	}
 
-	progs[position] = NULL;
+	progs[position] = NULL; // terminating NULL
 	return progs;
 }	
 
-char **parse_args(char *input)
+int count_progs(char **progs) // count number of progs in array 
 {
-	/* split arguments based on delimiters */
+	int count = 0;
+	while (progs[count]) {
+		count ++;
+	}
+	return count;
+}
 
+char **parse_args(char *prog)
+{
+    /* allocates memory for argument array
+     * tokenizes based on spaces and newline
+     * strips newline character
+     * rets ptr to array or NULL on err */
 	char **args = malloc(sizeof(char *) * ARG_SIZE);
-
-	if (!args) // check for allocation error
-	{
-		fprintf(stderr, "malloc error\n");
+	if (!args) { // allocation error
 		return NULL;
 	}
 
 	int position = 0;
-	char *token = strtok(input, " \n");
-	
-	while (token != NULL)
-	{
+	char *token = strtok(prog, " \n");
+	while (token) {
 		size_t length = strlen(token);
 		if (token[length - 1] == '\n')
 		{
@@ -202,170 +221,106 @@ char **parse_args(char *input)
 		token = strtok(NULL, " \n");
 	}
 
-	args[position] = NULL;
+	args[position] = NULL; // terminating NULL
 	return args;
 }
 
-int parse_output(char **args) 
+int parse_io(char **args, int flag) 
 {
-	/* checks for output redirection
-	 * opens file and returns fd 
-	 * returns -1 on error or if no output redirection*/
-	
+	/* checks for i/o redirection based on flag
+	 * input: flag=0   ouput: flag=1
+	 * returns -1 on error or no redirection */
+	int fd;
 	int current = 0;
-	char *cmp = ">";
+	char *cmp, *cmp2;
+
+	if (flag == 1) {
+		cmp = ">";
+		cmp2 = ">>";
+	} else {
+		cmp = "<";
+	}
 
 	while (args[current]) {
+        // compare every argument to redirection operators 
 		if (strcmp(args[current], cmp) == 0) {
-			// should check to make sure args[current+1] != NULL
-			int fd = open(args[current + 1], O_WRONLY | O_CREAT, 0644);
+		    if (flag == 1) {
+				fd = open(args[current + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			} else {
+				fd = open(args[current + 1], O_RDONLY, 0644);
+			}
 			if (fd < 0) {
 				perror("open");
 			}
-			args[current] = NULL;
+			args[current] = NULL; // remove redirection operator (< or >) from args
 			return fd;
-			//dup2(fd, 1); // make stdout got to the file
-			//close(fd);
-		} else if (!args[current + 1] && args[current + 2]) {
+		} else if (flag && (strcmp(args[current], cmp2) == 0)) {
+            fd = open(args[current + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd < 0) {
+                perror("open");
+            }
+            args[current] = NULL; // remove >> operator from args
+            return fd;
+		} else if (!args[current + 1] && args[current + 2]) { // check for second operator
 			current += 2;
 		} else {
 			current ++;
 		}
 	}
-	return -1;
+	return -1; // no redirection found
 }
 
-int parse_input(char **args)
+/* ---------------- BUILTIN FUNCTIONS ---------------- */
+
+int is_builtin(char **args) 
 {
-	/* checks for input redirection 
-	 * sets ptr to < / > operator to NULL 
-	 * opens file for input, returns fd 
-	 * returns -1 on error or if no input redirection */
-
-	int current = 0;
-	char *cmp = "<";
-
-	while (args[current]) {
-		if (strcmp(args[current], cmp) == 0) {
-			// should check to make sure args[current+1] != NULL 
-			int fd = open(args[current + 1], O_RDONLY, 0644);
-			if (fd < 0) {
-				perror("open: file doesn't exist");
-			}
-			args[current] = NULL;
-			return fd;
-		} else if (!args[current + 1] && args[current + 2]) {
-			current += 2;
-		} else {
-			current ++;
+	/* checks if a program is a builtin
+	 * returns index w/in builtin_func[] if so, -1 otherwise */
+	if (!args[0]) {
+		return 0; // empty command: help()
+	}
+	for (int i = 0; i < builtin_size(); i++) {
+		if ((strcmp(args[0], builtin_str[i])) == 0) {
+			return i;
 		}
 	}
 	return -1;
 }
 
-int execute_command(char **args, int in_fd, int out_fd)
+int builtin_size(void) // count number of builtin functions
 {
-	/* checks if command is a built-in
-	 * launchs new process otherwise
-	 * retuns 1 on sucess, 0 on err / termination */
-
-	if (!args[0]) // empty command
-	{
-		return tosh_help(args);
-	}
-	for (int i = 0; i < builtin_size(); i++)
-	{
-		if ((strcmp(args[0], builtin_str[i])) == 0)
-		{
-			return (*builtin_func[i])(args);
-		}
-	}
-	return launch_process(args, in_fd, out_fd);
+	return sizeof(builtin_str) / sizeof(char *);
 }
 
-int launch_process(char **args, int in_fd, int out_fd)
+int tosh_pwd(char **args) // print working directory
 {
-	// NEED TO CLEAR ERROR 
-
-	pid_t pid;
-	int status;
-
-	pid = fork();
-	if (pid == 0) // child process
-	{
-		if (in_fd > -1) {
-			dup2(in_fd, 0); // replace stdin w in_file
-		}
-		if (out_fd > -1) {
-			dup2(out_fd, 1); // replace stdout w out_file
-		}
-		close_pipes();
-		if (execvp(args[0], args) < 0){
-			perror("execv error");
-		}
-	}
-	else if (pid < 0) // error forking 
-	{
-		perror("execute_command error forking");
-	}
-	else // parent process 
-	{
-		close_pipes();
-		do 
-		{	
-			
-			waitpid(pid, &status, WUNTRACED);
-		} 
-		while (!WIFEXITED(status) && !WIFSIGNALED(status));
-	}
-	return 1;
-}
-
-/* ---------------- BUILTINS ---------------- */
-
-int tosh_pwd(char **args)
-{
-	/* prints current working directory */
-
 	char cwd[256];
-	if (getcwd(cwd, sizeof(cwd)) == NULL)
-	{
-		perror("getcwd error()");
-	} 
-	else 
-	{
+	if (getcwd(cwd, sizeof(cwd)) != NULL) {
 		printf("%s\n", cwd);
-	}
+	} // no err handling
 	return 1;
 }
-
 
 int tosh_cd(char **args)
 { 
 	/* changes cwd bassed on path passed to cd 
 	 * assumes a path is given, otherwise no action */
-
-	if (args[1]) // consider adding message to say argument needed?
-	{
-		if (chdir(args[1]) < 0)
-		{
-			perror("tosh");
+	if (args[1]) { // consider changing to ~/ for no arg 
+		if (chdir(args[1]) < 0) {
+			perror("cd");
 		}
 	}
 	return 1;
 }
 
-
-int tosh_help(char **args)
+int tosh_help(char **args) // list builtin functions
 {
-	/* prints built in functions */
 	printf("------------------------------------------------\n");
 	printf("tosh | Trey Oehmler | Middlebury CS315 Fall 2018\n");
 	printf("------------------------------------------------\n");
 	printf("The following functions are built in:\n");
 	
-	for (int i = 0; i < builtin_size(); i++)
-	{
+	for (int i = 0; i < builtin_size(); i++) {
 		printf(" - %s()\n", builtin_str[i]);
 	}
 
@@ -373,14 +328,9 @@ int tosh_help(char **args)
 	return 1;
 }
 
-
-int tosh_exit(char **args)
+int tosh_exit(char **args) // exit shell loop
 {
 	return 0;
 }
 
 
-int builtin_size(void)
-{
-	return sizeof(builtin_str) / sizeof(char *);
-}
