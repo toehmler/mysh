@@ -15,12 +15,11 @@
 
 #define INPUT_BYTES  4096
 #define ARG_SIZE     11
-#define MAX_PROGS    100
 
 void tosh_loop(void);
 char *get_input(void);
-char **parse_progs(char *input);
-int count_progs(char **progs);
+int count_pipes(char *input);
+char **parse_progs(char *input, int count);
 char **parse_args(char *prog);
 int parse_io(char **args, int flag);
 int is_builtin(char **args);
@@ -70,12 +69,12 @@ void tosh_loop(void)
 			printf("\n");
 			break;
 		}
-	
-		progs = parse_progs(input); // init progs
+
+        prog_count = count_pipes(input) + 1;
+        progs = parse_progs(input, prog_count); // init progs
 		if (!progs) { // malloc error within parse_progs()
 			continue; // goto next loop iteration
 		}
-		prog_count = count_progs(progs); 
 
 		// save in / out
 		int tmp_in = dup(0);
@@ -127,6 +126,7 @@ void tosh_loop(void)
 				} else if (pid == 0) {
 					if (execvp(args[0], args) < 0) {
 						perror("exec error");
+                        exit(1);
 					}
 				}
 			}
@@ -148,6 +148,18 @@ void tosh_loop(void)
 	}
 }
 
+int count_pipes(char *input) 
+{
+    /* counts pipes of input */
+    int count = 0;
+    char *pch = strchr(input, '|');
+    while (pch != NULL) {
+        count ++;
+        pch = strchr(pch + 1, '|');
+    }
+    return count;
+}
+
 char *get_input(void)
 {	
     /* allocates memory for input 
@@ -166,12 +178,12 @@ char *get_input(void)
 	return line_buf;
 }
 
-char **parse_progs(char *input) 
+char **parse_progs(char *input, int count) 
 {
     /* allocates memory for program array
      * tokenizes progs based on pipes using strtok()
      * returns ptr to array or NULL on err */
-	char **progs = malloc(sizeof(char *) * MAX_PROGS);
+	char **progs = malloc(sizeof(char *) * (count + 1));
 	if (!progs) { // allocation error
 		return NULL;
 	}
@@ -184,7 +196,6 @@ char **parse_progs(char *input)
 		token = strtok(NULL, "|");
 	}
 
-	progs[position] = NULL; // terminating NULL
 	return progs;
 }	
 
