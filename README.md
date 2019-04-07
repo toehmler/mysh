@@ -1,8 +1,7 @@
-# mysh | Assignment 5
+# Custom Shell Implementation 
 
 ## Authors
 Trey Oehmler 
-CS315 Fall 2018
 
 ## Known bugs
 
