@@ -3,7 +3,6 @@
 ## Authors
 Trey Oehmler 
 
-## Known bugs
 
 ## References
 
